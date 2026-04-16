@@ -1,0 +1,27 @@
+[project]
+name = "clueme-meetings"
+version = "0.1.0"
+description = "A real-time meeting assistant that captures system audio, transcribes locally with Whisper, and lets you chat with AI about your meetings."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+keywords = ["meeting", "transcription", "whisper", "gemini", "ai-assistant", "real-time"]
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "flet>=0.28",
+    "flet-cli>=0.84.0",
+    "flet-desktop>=0.84.0",
+    "google-genai>=0.4.0",
+    "numpy>=2.4.4",
+    "pyaudiowpatch>=0.2.12.8",
+    "python-dotenv>=1.2.0",
+    "scipy>=1.17.1",
+]
+
+[tool.uv]
+link-mode = "symlink"
+
+[dependency-groups]
+dev = [
+    "websocket-client>=1.9.0",
+]

@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# AI contexts
+.agents
+
+# Secrets
+.env
+.env.backup
+
+# ref
+references/
+_test*
+
+# Internal docs
+polishing_plan.md
+
+# IDE / tool caches
+.ruff_cache/
+.idea/
+.vscode/
+.mypy_cache/
+*.log
