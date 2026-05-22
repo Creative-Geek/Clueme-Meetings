@@ -1,6 +1,6 @@
 """Transcript tab — live scrolling transcript display with copy/export."""
 
-from typing import Callable
+from typing import Awaitable, Callable
 
 import flet as ft
 
@@ -18,8 +18,8 @@ class TranscriptTab(ft.Column):
         # External callback: returns formatted transcript text string
         self._get_text: Callable[[], str] | None = None
         # External callbacks set by main.py
-        self._on_copy: Callable[[], None] | None = None
-        self._on_export: Callable[[], None] | None = None
+        self._on_copy: Callable[[], Awaitable[None]] | None = None
+        self._on_export: Callable[[], Awaitable[None]] | None = None
 
         self._copy_btn = ft.IconButton(
             icon=ft.Icons.COPY_OUTLINED,
@@ -94,15 +94,14 @@ class TranscriptTab(ft.Column):
                     pass
                 finally:
                     self._scroll_pending = False
-            self.page.run_task(_scroll)
+            self.page.run_task(_scroll)  # pyrefly: ignore
 
     def scroll_to_bottom(self):
-        """Force scroll to the bottom (e.g. on tab switch)."""
         self._is_near_bottom = True
         if self.page:
             async def _scroll():
                 await self._list.scroll_to(offset=-1, duration=150)
-            self.page.run_task(_scroll)
+            self.page.run_task(_scroll)  # pyrefly: ignore
 
     def add_confirmed(self, text: str, minute: int):
         """Add a confirmed (locked-in) transcript segment."""

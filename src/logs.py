@@ -4,7 +4,7 @@ Two independent logs (TranscriptLog, ChatLog) are merged just-in-time
 into a Gemini-compatible message list before each API call.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 
 from google.genai import types
@@ -27,6 +27,7 @@ class ChatEntry:
     role: str   # "user" or "model"
     text: str
     minute: int
+    images: list[str] = field(default_factory=list)
 
 
 class TranscriptLog:
@@ -61,8 +62,8 @@ class ChatLog:
     def __init__(self):
         self._entries: list[ChatEntry] = []
 
-    def append(self, role: str, text: str, minute: int) -> None:
-        self._entries.append(ChatEntry(role=role, text=text, minute=minute))
+    def append(self, role: str, text: str, minute: int, images: list[str] | None = None) -> None:
+        self._entries.append(ChatEntry(role=role, text=text, minute=minute, images=images or []))
 
     @property
     def entries(self) -> list[ChatEntry]:
@@ -79,7 +80,7 @@ class ChatLog:
         self._entries.clear()
 
     def to_dicts(self) -> list[dict]:
-        return [{"role": e.role, "text": e.text, "minute": e.minute} for e in self._entries]
+        return [{"role": e.role, "text": e.text, "minute": e.minute, "images": e.images} for e in self._entries]
 
     def load_dicts(self, data: list[dict]) -> None:
         self._entries = [ChatEntry(**d) for d in data]
@@ -102,7 +103,7 @@ def _collect_transcript_blocks(
     while idx < len(entries) and entries[idx].minute <= up_to_minute:
         entry = entries[idx]
         if entry.minute != current_minute:
-            if current_texts:
+            if current_minute is not None and current_texts:
                 blocks.append(
                     f"[Meeting Update {_format_minute(current_minute)}]\n{' '.join(current_texts)}"
                 )
@@ -112,7 +113,7 @@ def _collect_transcript_blocks(
             current_texts.append(entry.text)
         idx += 1
 
-    if current_texts:
+    if current_minute is not None and current_texts:
         blocks.append(
             f"[Meeting Update {_format_minute(current_minute)}]\n{' '.join(current_texts)}"
         )
@@ -147,9 +148,18 @@ def assemble_api_messages(
             if not has_transcript and not blocks:
                 blocks.append("[No transcript captured yet — the meeting recording has not started or no speech detected.]")
             blocks.append(chat_entry.text)
+            
+            parts = []
+            if chat_entry.images:
+                import base64
+                for img_b64 in chat_entry.images:
+                    img_bytes = base64.b64decode(img_b64)
+                    parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+            parts.append(types.Part(text="\n\n".join(blocks)))
+
             messages.append(types.Content(
                 role="user",
-                parts=[types.Part(text="\n\n".join(blocks))],
+                parts=parts,
             ))
 
         elif chat_entry.role == "model":
@@ -164,12 +174,12 @@ def assemble_api_messages(
 
     # Inject tentative text into the last user message
     if tentative_text.strip() and messages and messages[-1].role == "user":
-        existing_text = messages[-1].parts[0].text
+        last_parts = list(messages[-1].parts or [])
+        existing_text = last_parts[-1].text or ""
+        last_parts[-1] = types.Part(text=existing_text + f"\n\n[Live Audio]\n{tentative_text.strip()}")
         messages[-1] = types.Content(
             role="user",
-            parts=[types.Part(
-                text=existing_text + f"\n\n[Live Audio]\n{tentative_text.strip()}"
-            )],
+            parts=last_parts,
         )
 
     return messages

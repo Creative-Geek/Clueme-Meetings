@@ -12,7 +12,9 @@ dependencies = [
     "flet-cli>=0.84.0",
     "flet-desktop>=0.84.0",
     "google-genai>=0.4.0",
+    "httpx>=0.28.0",
     "numpy>=2.4.4",
+    "pillow>=12.2.0",
     "pyaudiowpatch>=0.2.12.8",
     "python-dotenv>=1.2.0",
     "scipy>=1.17.1",
@@ -21,7 +23,15 @@ dependencies = [
 [tool.uv]
 link-mode = "symlink"
 
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+search-path = ["."]
+
 [dependency-groups]
 dev = [
+    "pyrefly>=0.64.1",
     "websocket-client>=1.9.0",
 ]

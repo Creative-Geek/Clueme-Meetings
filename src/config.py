@@ -10,6 +10,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 _defaults = {
     "google_api_key": "",
     "assemblyai_api_key": "",
+    "tavily_api_key": "",
     "model": "gemma-4-31b-it",
     "thinking_level": "HIGH",
     "speaker_device": "",  # "" = system default loopback

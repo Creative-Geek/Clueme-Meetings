@@ -13,13 +13,12 @@ import logging
 import warnings
 import asyncio
 import faulthandler
-import time as _time
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="google.genai")
 logging.raiseExceptions = False  # prevent recursive '--- Logging error ---' cascade
 
 # Load config and apply env vars before anything reads them.
-from src.config import load as load_config, save as save_config, apply_env
+from src.config import load as load_config, apply_env
 
 apply_env()
 
@@ -37,54 +36,53 @@ faulthandler.enable(file=_crash_log_file)
 
 import flet as ft
 
-from src.agent import (
-    reconfigure_client,
-    MODELS,
-    set_model_config,
-    generate_session_title,
-)
-from src.sessions import list_sessions, rename_session, delete_session
-from src.session_context import SessionManager
-from src.transcriber import LiveTranscriber, list_devices
-from src.ui.chat_tab import ChatTab, StreamChunk
+# App setup
+from src.app.page_setup import setup_page
+from src.app.state import initialize_state
+
+# Handlers
+from src.handlers.chat.send_handler import ChatHandler
+from src.handlers.chat.retry_handler import RetryHandler
+from src.handlers.chat.summarize_handler import SummarizeHandler
+from src.handlers.chat.suggest_handler import SuggestHandler
+from src.handlers.chat.edit_handler import EditHandler
+from src.handlers.chat.stop_handler import StopHandler
+from src.handlers.recording.start_handler import StartHandler
+from src.handlers.recording.stop_handler import StopHandler as RecordingStopHandler
+from src.handlers.recording.callbacks import RecordingCallbacks
+from src.handlers.session.create_handler import CreateHandler
+from src.handlers.session.enter_handler import EnterHandler
+from src.handlers.session.back_handler import BackHandler
+from src.handlers.session.delete_handler import DeleteHandler
+from src.handlers.session.rename_handler import RenameHandler
+from src.handlers.session.auto_name_handler import AutoNameHandler
+from src.handlers.toolbar.update_handler import UpdateToolbarHandler
+from src.handlers.toolbar.clear_handler import ClearHandler
+from src.handlers.view.switch_handler import SwitchHandler
+from src.handlers.view.rebuild_handler import RebuildHandler
+
+# Layout
+from src.layout.toolbar import create_meeting_toolbar, create_session_toolbar
+from src.layout.meeting_view import create_meeting_view
+from src.layout.home_view import create_home_view
+
+# UI components
+from src.ui.chat_tab import ChatTab
 from src.ui.transcript_tab import TranscriptTab
 from src.ui.session_list import SessionList
 from src.ui.settings_dialog import SettingsDialog
 
-
-SUMMARIZE_PROMPT = (
-    "Summarize everything discussed in this meeting so far (minus anything you already summarized), organized by topic. "
-    "Be concise and use bullet points."
-)
+# Session management
+from src.sessions import list_sessions
 
 
 def main(page: ft.Page):
     # ── Page setup ─────────────────────────────────────────────────
-    page.title = "Clueme Meetings"
-    page.theme_mode = ft.ThemeMode.DARK
-    page.dark_theme = ft.Theme(
-        color_scheme_seed=ft.Colors.CYAN,
-    )
-    page.padding = 16
-    page.window.width = 700
-    page.window.height = 800
-
-    # App icon (Windows taskbar + title bar)
-    _icon_path = os.path.join(
-        os.path.dirname(__file__), "assets", "logo_no_text_cropped.ico"
-    )
-    if os.path.exists(_icon_path):
-        page.window.icon = _icon_path
+    setup_page(page)
 
     # ── State ──────────────────────────────────────────────────────
-    cfg = load_config()
-    transcriber: LiveTranscriber | None = None
-    manager = SessionManager()
-
-    # Apply saved model config
-    set_model_config(
-        cfg.get("model", "gemma-4-31b-it"), cfg.get("thinking_level", "HIGH")
-    )
+    cfg, transcriber, manager = initialize_state()
+    transcriber_var = [transcriber]  # Mutable reference for handlers
 
     # ── UI components ──────────────────────────────────────────────
     transcript_tab = TranscriptTab()
@@ -92,22 +90,15 @@ def main(page: ft.Page):
     session_list_view = SessionList()
     settings = SettingsDialog(page)
 
-    status_text = ft.Text(
-        "Ready",
-        size=12,
-        color=ft.Colors.ON_SURFACE_VARIANT,
-    )
-
+    status_text = ft.Text("Ready", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
     loading_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, visible=False)
 
     # Overlay shown while loading heavy sessions
-    _session_loading_overlay = ft.Container(
+    session_loading_overlay = ft.Container(
         content=ft.Column(
             [
                 ft.ProgressRing(width=32, height=32, stroke_width=3),
-                ft.Text(
-                    "Loading session…", size=14, color=ft.Colors.ON_SURFACE_VARIANT
-                ),
+                ft.Text("Loading session…", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             alignment=ft.MainAxisAlignment.CENTER,
@@ -123,9 +114,7 @@ def main(page: ft.Page):
     naming_indicator = ft.Row(
         [
             ft.ProgressRing(width=12, height=12, stroke_width=2),
-            ft.Text(
-                "Naming…", size=12, italic=True, color=ft.Colors.ON_SURFACE_VARIANT
-            ),
+            ft.Text("Naming…", size=12, italic=True, color=ft.Colors.ON_SURFACE_VARIANT),
         ],
         spacing=6,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -133,30 +122,14 @@ def main(page: ft.Page):
     )
 
     # ── Recording banner for non-recording sessions ───────────────
-    def _goto_recording_session(e):
-        """Navigate to the recording session from the banner."""
-        if manager.recording_path:
-            _enter_session(manager.recording_path)
-
     recording_info_banner = ft.Container(
         content=ft.Row(
             controls=[
                 ft.Icon(ft.Icons.FIBER_MANUAL_RECORD, size=12, color=ft.Colors.ERROR),
-                ft.Text(
-                    "Recording active on another session",
-                    size=12,
-                    color=ft.Colors.ON_ERROR_CONTAINER,
-                ),
+                ft.Text("Recording active on another session", size=12, color=ft.Colors.ON_ERROR_CONTAINER),
                 ft.Container(expand=True),
-                ft.Text(
-                    "Go to recording",
-                    size=12,
-                    color=ft.Colors.ON_ERROR_CONTAINER,
-                    italic=True,
-                ),
-                ft.Icon(
-                    ft.Icons.ARROW_FORWARD, size=14, color=ft.Colors.ON_ERROR_CONTAINER
-                ),
+                ft.Text("Go to recording", size=12, color=ft.Colors.ON_ERROR_CONTAINER, italic=True),
+                ft.Icon(ft.Icons.ARROW_FORWARD, size=14, color=ft.Colors.ON_ERROR_CONTAINER),
             ],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=6,
@@ -165,29 +138,11 @@ def main(page: ft.Page):
         border_radius=8,
         bgcolor=ft.Colors.ERROR_CONTAINER,
         ink=True,
-        on_click=_goto_recording_session,
+        on_click=lambda e: enter_handler.enter(manager.recording_path) if manager.recording_path else None,
         visible=False,
     )
 
     # ── Clear menu ────────────────────────────────────────────────
-    def handle_clear_menu(e):
-        action = e.control.data
-        ctx = manager.viewed_context
-        if not ctx:
-            return
-        if action == "chat":
-            ctx.chat_log.clear()
-            chat_tab.clear()
-        elif action == "transcript":
-            ctx.transcript_log.clear()
-            transcript_tab.clear()
-        elif action == "all":
-            ctx.chat_log.clear()
-            chat_tab.clear()
-            ctx.transcript_log.clear()
-            transcript_tab.clear()
-        page.update()
-
     clear_menu_btn = ft.PopupMenuButton(
         icon=ft.Icons.DELETE_OUTLINE,
         tooltip="Clear…",
@@ -196,20 +151,17 @@ def main(page: ft.Page):
                 content="Clear chat",
                 icon=ft.Icons.CHAT_OUTLINED,
                 data="chat",
-                on_click=handle_clear_menu,
             ),
             ft.PopupMenuItem(
                 content="Clear transcript",
                 icon=ft.Icons.SUBTITLES_OUTLINED,
                 data="transcript",
-                on_click=handle_clear_menu,
             ),
             ft.PopupMenuItem(),  # divider
             ft.PopupMenuItem(
                 content="Clear all",
                 icon=ft.Icons.DELETE_SWEEP_OUTLINED,
                 data="all",
-                on_click=handle_clear_menu,
             ),
         ],
     )
@@ -217,362 +169,127 @@ def main(page: ft.Page):
     start_btn = ft.Button(
         "Start Listening",
         icon=ft.Icons.MIC,
-        on_click=lambda e: start_listening(e),
-        style=ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=12),
-        ),
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
     )
 
     stop_btn = ft.Button(
         "Stop",
         icon=ft.Icons.STOP,
-        on_click=lambda e: stop_listening(e),
         visible=False,
-        style=ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=12),
-            color=ft.Colors.ERROR,
-        ),
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12), color=ft.Colors.ERROR),
     )
 
-    # ── Session name helpers ──────────────────────────────────────
-    def _get_session_name(path) -> str:
+    # ── Helper functions ────────────────────────────────────────────
+    def get_session_name(path) -> str:
         """Return the display name for a session path."""
         for s in list_sessions():
             if s["path"] == path:
                 return s.get("name", "") or "Untitled Session"
         return "Untitled Session"
 
-    # ── Auto-save helper ──────────────────────────────────────────
-    def _auto_save():
-        """Save the currently viewed session."""
-        manager.save_viewed()
+    # ── Initialize handlers ─────────────────────────────────────────
+    # Recording callbacks
+    recording_callbacks = RecordingCallbacks(manager, transcript_tab, page)
 
-    async def _auto_name_session(session_path):
-        """Generate an AI title based on the auto_name config setting."""
-        if not session_path:
-            return
+    # Recording handlers
+    start_handler = StartHandler(
+        manager,
+        transcriber_var,
+        start_btn,
+        stop_btn,
+        loading_ring,
+        recording_info_banner,
+        status_text,
+        page,
+        recording_callbacks.on_confirmed,
+        recording_callbacks.on_tentative,
+        lambda: recording_callbacks.on_ready(loading_ring, status_text),
+        lambda msg: recording_callbacks.on_error(msg, start_btn, stop_btn, loading_ring, status_text),
+    )
 
-        c = load_config()
-        auto_name = c.get("auto_name", "first_stop")
+    stop_handler = RecordingStopHandler(
+        manager,
+        transcriber_var,
+        start_btn,
+        stop_btn,
+        loading_ring,
+        recording_info_banner,
+        status_text,
+        session_list_view,
+        page,
+        session_title_text,
+        naming_indicator,
+        None,  # Will be set after auto_name_handler is created
+    )
 
-        if auto_name == "never":
-            _debug_log.log_event("AUTO_NAME", "skipped — auto_name=never")
-            return
+    # Chat handlers
+    chat_handler = ChatHandler(manager, chat_tab, transcriber_var[0], page, settings, clear_menu_btn)
+    retry_handler = RetryHandler(manager, chat_tab, transcriber_var[0], page, settings, clear_menu_btn)
+    summarize_handler = SummarizeHandler(chat_handler)
+    suggest_handler = SuggestHandler(chat_handler)
+    edit_handler = EditHandler(manager)
+    stop_chat_handler = StopHandler(manager)
 
-        # Find session metadata
-        session_meta = None
-        for s in list_sessions():
-            if s["path"] == session_path:
-                session_meta = s
-                break
-        if not session_meta:
-            _debug_log.log_event("AUTO_NAME", "skipped — session not found in list")
-            return
+    # Session handlers
+    auto_name_handler = AutoNameHandler(manager, session_title_text, naming_indicator, session_list_view, page)
+    stop_handler.auto_name_session_func = auto_name_handler.auto_name_session
 
-        # Never overwrite a manually-set name
-        if session_meta.get("name_source") == "manual":
-            _debug_log.log_event(
-                "AUTO_NAME",
-                f"skipped — manual name anchored: {session_meta.get('name')!r}",
-            )
-            return
+    create_handler = CreateHandler(
+        manager,
+        transcript_tab,
+        chat_tab,
+        session_title_text,
+        naming_indicator,
+        None,  # Will be set after update_toolbar_handler is created
+        None,  # Will be set after show_meeting_view is defined
+    )
 
-        # "first_stop": skip if any name already exists
-        if auto_name == "first_stop" and session_meta.get("name"):
-            _debug_log.log_event(
-                "AUTO_NAME",
-                f"skipped — first_stop and already named: {session_meta.get('name')!r}",
-            )
-            return
+    enter_handler = EnterHandler(
+        manager,
+        session_loading_overlay,
+        None,  # Will be set after show_meeting_view is defined
+        None,  # Will be set after rebuild_handler is created
+        None,  # Will be set after update_toolbar_handler is created
+        page,
+    )
 
-        # Generate from transcript
-        ctx = manager.get_or_load(session_path)
-        transcript_text = " ".join(e.text for e in ctx.transcript_log.entries)
-        if not transcript_text.strip():
-            _debug_log.log_event("AUTO_NAME", "skipped — transcript is empty")
-            return
-        _debug_log.log_event(
-            "AUTO_NAME",
-            f"calling AI — mode={auto_name} transcript_len={len(transcript_text)}",
-        )
-        if manager.viewed_path == session_path:
-            session_title_text.visible = False
-            naming_indicator.visible = True
-            page.update()
-        try:
-            title = await generate_session_title(transcript_text)
-            _debug_log.log_event("AUTO_NAME", f"AI returned: {title!r}")
-            rename_session(session_path, title, source="auto")
-            if manager.viewed_path == session_path:
-                session_title_text.value = title
-                session_title_text.visible = True
-                naming_indicator.visible = False
-            session_list_view.refresh(list_sessions())
-            page.update()
-        except Exception as ex:
-            _debug_log.log_event("AUTO_NAME", f"ERROR: {ex}")
-            if manager.viewed_path == session_path:
-                session_title_text.visible = True
-                naming_indicator.visible = False
-                page.update()
+    back_handler = BackHandler(manager, session_list_view, None, get_session_name)  # show_session_list will be set
+    delete_handler = DeleteHandler(manager, session_list_view, page)
+    rename_handler = RenameHandler(manager, session_list_view, session_title_text, page)
 
-    # ── Transcriber callbacks ──────────────────────────────────────
-    def on_confirmed(text: str, minute: int):
-        """Transcriber confirmed text — write to RECORDING session."""
-        rec = manager.recording_context
-        if not rec:
-            return
-        rec.transcript_log.append(text=text, minute=minute)
+    # Toolbar handlers
+    update_toolbar_handler = UpdateToolbarHandler(manager, start_btn, stop_btn, recording_info_banner, status_text, get_session_name)
+    clear_handler = ClearHandler(manager, chat_tab, transcript_tab)
 
-        # Incremental save — persist immediately so a crash can't lose data
-        if manager.recording_path:
-            manager.save(manager.recording_path)
+    # View handlers
+    rebuild_handler = RebuildHandler(transcript_tab, chat_tab, session_title_text, naming_indicator, get_session_name)
+    enter_handler.rebuild_ui_func = rebuild_handler.rebuild
+    enter_handler.update_toolbar_func = update_toolbar_handler.update
 
-        # Only update the transcript UI if viewing the recording session
-        if manager.viewing_recording:
+    # Wire clear menu
+    for item in clear_menu_btn.items:
+        item.on_click = lambda e, action=item.data: clear_handler.handle_clear(action)
 
-            async def _update():
-                transcript_tab.add_confirmed(text, minute)
-                page.update()
+    # Wire start/stop buttons
+    start_btn.on_click = lambda e: start_handler.start()
+    stop_btn.on_click = lambda e: page.run_task(stop_handler.stop)
 
-            page.run_task(_update)
+    # Wire session handlers
+    create_handler.update_toolbar_func = update_toolbar_handler.update
 
-    def on_tentative(text: str):
-        # Only show tentative text if viewing the recording session
-        if manager.viewing_recording:
-
-            async def _update():
-                transcript_tab.set_tentative(text)
-                page.update()
-
-            page.run_task(_update)
-
-    def on_transcriber_ready():
-        async def _update():
-            loading_ring.visible = False
-            status_text.value = "🎧 Listening…"
-            status_text.color = ft.Colors.PRIMARY
-            page.update()
-
-        page.run_task(_update)
-
-    def on_transcriber_error(message: str):
-        async def _update():
-            loading_ring.visible = False
-            start_btn.visible = True
-            stop_btn.visible = False
-            start_btn.disabled = False
-            status_text.value = f"⚠️ {message}"
-            status_text.color = ft.Colors.ERROR
-            manager.stop_recording()
-            page.update()
-
-        page.run_task(_update)
-
-    # ── Start / Stop ───────────────────────────────────────────────
-    def start_listening(e):
-        nonlocal transcriber
-        if manager.is_recording:
-            return  # already recording another session
-
-        # Ensure previous transcriber is fully cleaned up before creating a new one
-        if transcriber:
-            transcriber.stop(wait=True)
-            transcriber = None
-
-        start_btn.visible = False
-        stop_btn.visible = True
-        loading_ring.visible = True
-        recording_info_banner.visible = False
-        status_text.value = "Loading model…"
-        status_text.color = ft.Colors.ON_SURFACE_VARIANT
-        page.update()
-
-        # Mark this session as the recording target
-        if manager.viewed_path:
-            manager.start_recording(manager.viewed_path)
-
-        c = load_config()
-        transcriber = LiveTranscriber(
-            model_size=c.get("whisper_model", "tiny"),
-            speaker_device_name=c.get("speaker_device", ""),
-            mic_device_name=c.get("mic_device", ""),
-            on_confirmed=on_confirmed,
-            on_tentative=on_tentative,
-            on_ready=on_transcriber_ready,
-            on_error=on_transcriber_error,
-        )
-        transcriber.start()
-
-    def stop_listening(e):
-        page.run_task(handle_stop_listening)
-
-    async def handle_stop_listening():
-        nonlocal transcriber
-        recording_path = manager.recording_path
-
-        # Disable button during wait
-        stop_btn.disabled = True
-        status_text.value = "Finalizing transcript…"
-        status_text.color = ft.Colors.ON_SURFACE_VARIANT
-        page.update()
-
-        if transcriber:
-            # Wait for backend threads to finish promotion
-            await asyncio.to_thread(transcriber.stop, wait=True)
-            transcriber = None
-
-        manager.stop_recording()
-        start_btn.visible = True
-        stop_btn.visible = False
-        stop_btn.disabled = False
-        start_btn.disabled = False
-        loading_ring.visible = False
-        recording_info_banner.visible = False
-        status_text.value = "Stopped"
-        status_text.color = ft.Colors.ON_SURFACE_VARIANT
-        session_list_view.set_recording(False)
-        page.update()
-
-        # Auto-save the recording session
-        if recording_path:
-            manager.save(recording_path)
-            await _auto_name_session(recording_path)
-
-    # ── Toolbar state helper ──────────────────────────────────────
-    def _update_toolbar_for_session():
-        """Update Start/Stop buttons and banners based on recording state vs viewed session."""
-        if not manager.is_recording:
-            # No recording active — show Start, hide banner
-            start_btn.visible = True
-            start_btn.disabled = False
-            stop_btn.visible = False
-            recording_info_banner.visible = False
-            status_text.value = "Ready"
-            status_text.color = ft.Colors.ON_SURFACE_VARIANT
-        elif manager.viewing_recording:
-            # Viewing the recording session — show Stop
-            start_btn.visible = False
-            stop_btn.visible = True
-            recording_info_banner.visible = False
-            status_text.value = "🎧 Listening…"
-            status_text.color = ft.Colors.PRIMARY
-        else:
-            # Recording, but viewing a different session
-            start_btn.visible = True
-            start_btn.disabled = True
-            start_btn.tooltip = "Stop the active recording first"
-            stop_btn.visible = False
-            recording_info_banner.visible = True
-            rec_name = _get_session_name(manager.recording_path)
-            recording_info_banner.content.controls[1].value = f"Recording: {rec_name}"
-            status_text.value = "Browsing saved session"
-            status_text.color = ft.Colors.ON_SURFACE_VARIANT
-
-    # ── Chat handlers ──────────────────────────────────────────────
-    async def handle_chat_send(user_message: str):
-        ctx = manager.viewed_context
-        if not ctx:
-            return
-
-        chat_tab.add_user_message(user_message)
-        chat_tab.start_assistant_message()
-        chat_tab.set_streaming(True)
-        settings.button.disabled = True
-        clear_menu_btn.disabled = True
-        page.update()
-
-        # Use system-time minute for ordering
-        minute = int(_time.time() // 60)
-        tentative = (
-            transcriber.tentative if (transcriber and manager.viewing_recording) else ""
-        )
-
-        try:
-            async for chunk in ctx.chat.send(user_message, minute, tentative):
-                chat_tab.append_chunk(chunk)
-                page.update()
-        except Exception as e:
-            chat_tab.append_chunk(StreamChunk(text=f"\n\n⚠️ Error: {e}"))
-            page.update()
-
-        chat_tab.finish_assistant_message()
-        chat_tab.set_streaming(False)
-        settings.button.disabled = False
-        clear_menu_btn.disabled = False
-        page.update()
-
-        # Auto-save after chat exchange
-        _auto_save()
-
-    def on_chat_send(message: str):
-        page.run_task(handle_chat_send, message)
-
-    def on_chat_stop():
-        ctx = manager.viewed_context
-        if ctx:
-            ctx.chat.cancel()
-
-    def on_chat_edit(bubble_index: int):
-        """User edited a message — truncate ChatLog to match."""
-        ctx = manager.viewed_context
-        if ctx:
-            ctx.chat_log.truncate_from(bubble_index)
-
-    def on_chat_retry():
-        """User clicked retry — remove last model response, re-stream."""
-        ctx = manager.viewed_context
-        if not ctx:
-            return
-        last_user_text = ctx.chat.pop_last_model_response()
-        if last_user_text:
-            page.run_task(handle_retry)
-
-    async def handle_retry():
-        """Re-send the last user message (already in ChatLog)."""
-        ctx = manager.viewed_context
-        if not ctx:
-            return
-
-        chat_tab.start_assistant_message()
-        chat_tab.set_streaming(True)
-        settings.button.disabled = True
-        clear_menu_btn.disabled = True
-        page.update()
-
-        minute = int(_time.time() // 60)
-        tentative = (
-            transcriber.tentative if (transcriber and manager.viewing_recording) else ""
-        )
-
-        try:
-            async for chunk in ctx.chat.resend(minute, tentative):
-                chat_tab.append_chunk(chunk)
-                page.update()
-        except Exception as e:
-            chat_tab.append_chunk(StreamChunk(text=f"\n\n⚠️ Error: {e}"))
-            page.update()
-
-        chat_tab.finish_assistant_message()
-        chat_tab.set_streaming(False)
-        settings.button.disabled = False
-        clear_menu_btn.disabled = False
-        page.update()
-
-        # Auto-save after retry
-        _auto_save()
-
-    def on_summarize():
-        on_chat_send(SUMMARIZE_PROMPT)
-
-    chat_tab._on_send = on_chat_send
-    chat_tab._on_summarize = on_summarize
-    chat_tab._on_stop = on_chat_stop
-    chat_tab._on_edit = on_chat_edit
-    chat_tab._on_retry = on_chat_retry
+    # Wire chat tab handlers
+    chat_tab._on_send = lambda msg, imgs: page.run_task(chat_handler.send, msg, imgs)
+    chat_tab._on_summarize = lambda: page.run_task(summarize_handler.summarize)
+    chat_tab._on_suggest = lambda: page.run_task(suggest_handler.suggest)
+    chat_tab._on_stop = lambda: stop_chat_handler.stop()
+    chat_tab._on_edit = lambda idx: edit_handler.edit(idx)
+    chat_tab._on_retry = lambda: page.run_task(retry_handler.retry)
 
     # ── Transcript data provider ──────────────────────────────────
-    def _format_transcript_text() -> str:
+    import time as _time
+    from src.ui.chat_tab import StreamChunk
+
+    def format_transcript_text() -> str:
         """Format transcript log entries as plain text with minute headers."""
         ctx = manager.viewed_context
         if not ctx:
@@ -587,151 +304,43 @@ def main(page: ft.Page):
             lines.append(entry.text)
         return "\n".join(lines).strip()
 
-    transcript_tab._get_text = _format_transcript_text
+    transcript_tab._get_text = format_transcript_text
 
-    # ── View switching (session list ↔ meeting view) ──────────────
-    def _rebuild_ui_from_context(ctx):
-        """Rebuild transcript and chat UI from a session context."""
-        transcript_tab.clear()
-        for entry in ctx.transcript_log.entries:
-            transcript_tab.add_confirmed(entry.text, entry.minute)
-
-        chat_tab.clear()
-        for entry in ctx.chat_log.entries:
-            if entry.role == "user":
-                chat_tab.add_user_message(entry.text)
-            elif entry.role == "model":
-                chat_tab.start_assistant_message()
-                chat_tab.append_chunk(StreamChunk(text=entry.text))
-                chat_tab.finish_assistant_message()
-
-        # Update session title in toolbar
-        name = _get_session_name(ctx.path)
-        session_title_text.value = name
-        session_title_text.visible = True
-        naming_indicator.visible = False
-
-    def _enter_session(session_path):
-        """Load a session and switch to meeting view. Always allowed."""
-        _debug_log.log_event("SESSION", f"enter — {session_path}")
-        # Save current viewed session first
-        manager.save_viewed()
-
-        # Show loading overlay immediately, then defer heavy work
-        _session_loading_overlay.visible = True
-        _show_meeting_view()
+    # ── View switching functions ───────────────────────────────────
+    def show_meeting_view():
+        """Switch to meeting view."""
+        home_view.visible = False
+        meeting_view.visible = True
         page.update()
 
-        async def _do_load():
-            # Yield to event loop so the spinner renders
-            await asyncio.sleep(0.05)
-
-            # Heavy work: load + rebuild UI
-            ctx = manager.get_or_load(session_path)
-            manager.set_viewed(session_path)
-            _rebuild_ui_from_context(ctx)
-            _update_toolbar_for_session()
-
-            _session_loading_overlay.visible = False
-            page.update()
-
-        page.run_task(_do_load)
-
-    def _new_session():
-        """Create a fresh session and switch to meeting view. Always allowed."""
-        _debug_log.log_event("SESSION", "new session created")
-        # Save current viewed session first
-        manager.save_viewed()
-
-        ctx = manager.create_new()
-        manager.set_viewed(ctx.path)
-        transcript_tab.clear()
-        chat_tab.clear()
-        session_title_text.value = ""
-        naming_indicator.visible = False
-        _update_toolbar_for_session()
-        _show_meeting_view()
-
-    def _back_to_sessions(e=None):
-        """Navigate back to session list. Keep transcriber alive if recording."""
-        _auto_save()
-
-        if manager.is_recording:
-            rec_name = _get_session_name(manager.recording_path)
-            session_list_view.set_recording(
-                True,
-                session_name=rec_name,
-                recording_path=manager.recording_path,
-            )
-        else:
-            session_list_view.set_recording(False)
-
-        manager.clear_viewed()
-        _show_session_list()
-
-    def _resume_active_session():
-        """Return to the recording session from the session list."""
-        if manager.recording_path:
-            _enter_session(manager.recording_path)
-
-    def _delete_and_refresh(path):
-        _debug_log.log_event("SESSION", f"delete — {path}")
-        delete_session(path)
-        manager.evict(path)
+    def show_session_list():
+        """Switch to session list view."""
+        meeting_view.visible = False
+        home_view.visible = True
         session_list_view.refresh(list_sessions())
         page.update()
 
-    # ── Rename helpers (logic callbacks for SessionList dialog) ────
-    async def _ai_suggest_name(path):
-        """Generate an AI title from a session's transcript."""
-        ctx = manager.get_or_load(path)
-        transcript_text = " ".join(entry.text for entry in ctx.transcript_log.entries)
-        _debug_log.log_event(
-            "RENAME", f"AI suggest — transcript_len={len(transcript_text)}"
-        )
-        title = await generate_session_title(transcript_text)
-        _debug_log.log_event("RENAME", f"AI returned: {title!r}")
-        return title
-
-    def _confirm_rename(path, new_name):
-        """Commit a rename and refresh the UI."""
-        _debug_log.log_event("RENAME", f"manual rename: {new_name!r} (source=manual)")
-        rename_session(path, new_name, source="manual")
-        if manager.viewed_path == path:
-            session_title_text.value = new_name
-        session_list_view.refresh(list_sessions())
-        page.update()
-
-    def _handle_rename_session(path, current_name):
-        session_list_view.show_rename_dialog(
-            path,
-            current_name,
-            on_ai_suggest=_ai_suggest_name,
-            on_confirm=_confirm_rename,
-        )
+    # Wire view handlers
+    enter_handler.show_meeting_view_func = show_meeting_view
+    create_handler.show_meeting_view_func = show_meeting_view
+    back_handler.show_session_list_func = show_session_list
 
     # Wire session list callbacks
-    session_list_view._on_new_session = _new_session
-    session_list_view._on_select_session = _enter_session
-    session_list_view._on_delete_session = _delete_and_refresh
-    session_list_view._on_resume_session = _resume_active_session
-    session_list_view._on_rename_session = _handle_rename_session
+    session_list_view._on_new_session = create_handler.create
+    session_list_view._on_select_session = enter_handler.enter
+    session_list_view._on_delete_session = delete_handler.delete
+    session_list_view._on_resume_session = lambda: enter_handler.enter(manager.recording_path) if manager.recording_path else None
+    session_list_view._on_rename_session = lambda path, name: session_list_view.show_rename_dialog(
+        path, name, on_ai_suggest=rename_handler.ai_suggest_name, on_confirm=rename_handler.confirm_rename
+    )
 
     # ── Layout ─────────────────────────────────────────────────────
     transcript_panel = ft.Container(content=transcript_tab, expand=True, visible=True)
     chat_panel = ft.Container(content=chat_tab, expand=True, visible=False)
     panels = [transcript_panel, chat_panel]
 
-    def on_tab_change(e):
-        idx = int(e.data) if isinstance(e.data, str) else e.control.selected_index
-        for i, p in enumerate(panels):
-            p.visible = i == idx
-        # Scroll the newly-visible tab to bottom
-        if idx == 0:
-            transcript_tab.scroll_to_bottom()
-        elif idx == 1:
-            chat_tab.scroll_to_bottom()
-        page.update()
+    # View switch handler
+    switch_handler = SwitchHandler(transcript_tab, chat_tab, panels)
 
     tab_bar = ft.Tabs(
         ft.TabBar(
@@ -742,87 +351,42 @@ def main(page: ft.Page):
         ),
         length=2,
         selected_index=0,
-        on_change=on_tab_change,
+        on_change=switch_handler.switch,
     )
 
     back_btn = ft.IconButton(
         icon=ft.Icons.ARROW_BACK,
         tooltip="Back to sessions",
-        on_click=_back_to_sessions,
+        on_click=lambda e: back_handler.back(),
     )
 
-    meeting_toolbar = ft.Row(
-        controls=[
-            back_btn,
-            start_btn,
-            stop_btn,
-            loading_ring,
-            session_title_text,
-            naming_indicator,
-            ft.Container(expand=True),
-            status_text,
-            clear_menu_btn,
-            settings.button,
-        ],
-        alignment=ft.MainAxisAlignment.START,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    meeting_toolbar = create_meeting_toolbar(
+        back_btn,
+        start_btn,
+        stop_btn,
+        loading_ring,
+        session_title_text,
+        naming_indicator,
+        status_text,
+        clear_menu_btn,
+        settings.button,
     )
 
     # Meeting view container (hidden initially)
-    meeting_view = ft.Column(
-        controls=[
-            meeting_toolbar,
-            recording_info_banner,
-            ft.Divider(height=1),
-            tab_bar,
-            ft.Container(
-                content=ft.Stack([*panels, _session_loading_overlay]),
-                expand=True,
-            ),
-        ],
-        expand=True,
-        visible=False,
+    meeting_view = create_meeting_view(
+        meeting_toolbar,
+        recording_info_banner,
+        tab_bar,
+        panels,
+        session_loading_overlay,
     )
 
     # Session list toolbar
-    session_toolbar = ft.Row(
-        controls=[
-            ft.Container(expand=True),
-            settings.button,
-        ],
-        alignment=ft.MainAxisAlignment.END,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-    )
+    session_toolbar = create_session_toolbar(settings.button)
 
     # Session list view container (visible initially)
-    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "full_logo.svg")
-    home_view = ft.Column(
-        controls=[
-            session_toolbar,
-            ft.Container(
-                content=ft.Image(src=_logo_path, width=120, height=120, color="#83d3e3")
-                if os.path.exists(_logo_path)
-                else None,
-                alignment=ft.Alignment.CENTER,
-                padding=ft.Padding(top=-30, bottom=0, left=0, right=0),
-            ),
-            ft.Divider(height=1),
-            session_list_view,
-        ],
-        expand=True,
-        visible=True,
-    )
-
-    def _show_meeting_view():
-        home_view.visible = False
-        meeting_view.visible = True
-        page.update()
-
-    def _show_session_list():
-        meeting_view.visible = False
-        home_view.visible = True
-        session_list_view.refresh(list_sessions())
-        page.update()
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "full_logo.svg")
+    home_view = create_home_view(session_toolbar, session_list_view, logo_path)
 
     # Initialize session list
     session_list_view.refresh(list_sessions())
@@ -836,7 +400,7 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    print("version: 0.0.2")
+    print("version: 0.0.5")
     import multiprocessing
 
     multiprocessing.freeze_support()

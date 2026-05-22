@@ -51,6 +51,19 @@ Clueme Meetings is a desktop app that sits alongside your video calls and meetin
 - **Windows 10/11** (WASAPI loopback is Windows-only)
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** -- a fast Python package manager. It handles Python installation automatically.
 - **A Google Gemini API key** -- Get one free at [Google AI Studio](https://aistudio.google.com/apikey)
+- **NVIDIA CUDA DLLs** -- If you have an NVIDIA GPU, you **must** manually place the following files in `runtime/nvidia/cuda12/` in the project root. **WARNING: If you have a GPU and skip this step, the program will silently crash!**
+  - `cublas64_12.dll`
+  - `cublasLt64_12.dll`
+  - `cudart64_12.dll`
+  - `cudnn64_9.dll`
+  - `cudnn_adv64_9.dll`
+  - `cudnn_cnn64_9.dll`
+  - `cudnn_engines_precompiled64_9.dll`
+  - `cudnn_engines_runtime_compiled64_9.dll`
+  - `cudnn_graph64_9.dll`
+  - `cudnn_heuristic64_9.dll`
+  - `cudnn_ops64_9.dll`
+  - `zlibwapi.dll`
 
 ### Install & Run
 
@@ -114,22 +127,24 @@ graph LR
 
 ```
 Clueme-Meetings/
-├── main.py                 # App entry point and main UI
+├── main.py                 # App entry point; wires state, handlers, views, and UI components
 ├── src/
-│   ├── agent.py            # Gemini AI chat integration
-│   ├── config.py           # Configuration management
-│   ├── transcriber.py      # Whisper transcription engine
-│   ├── sessions.py         # Session save/load logic
-│   ├── session_context.py  # Per-session runtime state
-│   ├── logs.py             # Logging setup
-│   ├── debug_log.py        # Debug utilities
-│   └── ui/
-│       ├── chat_tab.py         # AI chat interface
-│       ├── transcript_tab.py   # Live transcript view
-│       ├── session_list.py     # Session management sidebar
-│       └── settings_dialog.py  # Settings modal
+│   ├── agent/              # Gemini client, model config, prompts, meeting chat, auto-naming
+│   ├── app/                # Page setup and startup state initialization
+│   ├── handlers/           # Event handlers for chat, recording, sessions, toolbar, and tabs
+│   ├── layout/             # Home/meeting view builders and toolbar layout
+│   ├── transcriber/        # Local Whisper and AssemblyAI transcription backends
+│   ├── ui/                 # Flet UI components for chat, transcript, sessions, and settings
+│   ├── config.py           # Local configuration management
+│   ├── logs.py             # TranscriptLog, ChatLog, and Gemini message assembly
+│   ├── sessions.py         # Session persistence and session list metadata
+│   ├── session_context.py  # Per-session runtime state and save/load bridge
+│   ├── debug_log.py        # Optional debug logging utilities
+│   ├── native_runtime.py   # Native runtime/DLL path setup
+│   └── whisper_online.py   # Streaming Whisper helper logic
 ├── assets/                 # Logo and icon files
 ├── docs/screenshots/       # App screenshots
+├── references/             # Research notes, prototypes, and external references
 ├── pyproject.toml          # Project metadata and dependencies
 └── uv.lock                 # Locked dependency versions
 ```
@@ -149,13 +164,24 @@ All user data is stored locally at `~/.clueme/`:
 
 ## Roadmap
 
-- [ ] GPU acceleration for Whisper (CUDA support)
-- [ ] Automatic meeting notes and summaries
-- [ ] Export transcripts to Markdown, TXT, or SRT
-- [ ] Microphone input support (capture your own voice too)
+- [x] GPU acceleration for Whisper (CUDA support)
+- [x] Automatic meeting notes and summaries
+- [x] Export transcripts to Markdown, TXT, or SRT
+- [x] Microphone input support (capture your own voice too)
+- [x] Refine system prompts
+- [x] Add "What should I say?" quick action for AI
+- [x] Web Search tool for AI (better responses for domain specific knowledge)
+- [ ] Support alternative LLM providers
+- [ ] Microphone bleeding mitigation (system audio might be picked up and repeated)
+- [ ] Search across all sessions
+- [ ] Ask AI across all sessions (Global RAG)
+- [ ] Migrate to an actual database (SQLite)
+- [ ] Context Management (compression and summarization for long transcripts)
 - [ ] Speaker diarization (who said what)
 - [ ] AssemblyAI integration as an alternative transcription backend
-- [ ] Linux and macOS support
+- [ ] Linux support
+- [ ] MacOS support
+- [ ] Build as a standalone desktop application
 
 ## Contributing
 

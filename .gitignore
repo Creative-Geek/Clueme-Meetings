@@ -29,3 +29,6 @@ polishing_plan.md
 .vscode/
 .mypy_cache/
 *.log
+
+# DLLs
+*.dll

@@ -163,12 +163,18 @@ def log_ai_payload(contents, model: str) -> None:
     if not _enabled or not _app_logger:
         return
     try:
-        parts = []
+        msgs = []
         for c in contents:
-            role = c.role
-            texts = [p.text for p in c.parts if p.text]
-            parts.append({"role": role, "parts": texts})
-        blob = json.dumps({"model": model, "messages": parts}, indent=2, ensure_ascii=False)
+            turn = {"role": c.role, "parts": []}
+            for p in c.parts or []:
+                if p.text:
+                    turn["parts"].append({"text": p.text})
+                if p.function_call:
+                    turn["parts"].append({"function_call": {"name": p.function_call.name, "args": p.function_call.args}})
+                if p.function_response:
+                    turn["parts"].append({"function_response": {"name": p.function_response.name, "response": p.function_response.response}})
+            msgs.append(turn)
+        blob = json.dumps({"model": model, "messages": msgs}, indent=2, ensure_ascii=False)
         _app_logger.info("[AI_PAYLOAD]\n%s", blob)
     except Exception as exc:
         _app_logger.warning("[AI_PAYLOAD] Failed to serialize: %s", exc)
@@ -179,3 +185,25 @@ def log_ai_response(text: str, model: str) -> None:
     if not _enabled or not _app_logger:
         return
     _app_logger.info("[AI_RESPONSE] model=%s\n%s", model, text)
+
+
+def log_tool_call(name: str, args: dict) -> None:
+    """Write a model-requested tool call to app.log."""
+    if not _enabled or not _app_logger:
+        return
+    try:
+        blob = json.dumps(args, indent=2, ensure_ascii=False)
+    except Exception:
+        blob = str(args)
+    _app_logger.info("[TOOL_CALL] name=%s\n%s", name, blob)
+
+
+def log_tool_result(name: str, result: dict) -> None:
+    """Write a tool execution result to app.log."""
+    if not _enabled or not _app_logger:
+        return
+    try:
+        blob = json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception:
+        blob = str(result)
+    _app_logger.info("[TOOL_RESULT] name=%s\n%s", name, blob)

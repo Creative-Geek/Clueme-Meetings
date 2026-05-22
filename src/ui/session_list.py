@@ -79,7 +79,7 @@ class SessionList(ft.Column):
             visible=False,
         )
 
-        self._recording_name_text = self._recording_banner.content.controls[1]
+        self._recording_name_text = self._recording_banner.content.controls[1]  # pyrefly: ignore
 
         self._new_session_btn = ft.Button(
             "New Session",
@@ -134,7 +134,7 @@ class SessionList(ft.Column):
             t_count = s.get("transcript_count", 0)
             c_count = s.get("chat_count", 0)
             path = s["path"]
-            is_recording = self._recording_path and path == self._recording_path
+            is_recording = self._recording_path is not None and path == self._recording_path
 
             # Recording indicator
             leading_icon = ft.Icon(
@@ -260,7 +260,7 @@ class SessionList(ft.Column):
         ai_btn = ft.IconButton(
             icon=ft.Icons.AUTO_AWESOME,
             tooltip="AI suggest name",
-            on_click=lambda e: self.page.run_task(_ai_suggest, e),
+            on_click=lambda e: self.page.run_task(_ai_suggest, e),  # pyrefly: ignore
             icon_size=20,
         )
 
